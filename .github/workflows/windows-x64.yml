@@ -53,7 +53,7 @@ jobs:
 
       - name: build_third_party_libs.py
         shell: bash
-        run: cp tmp_pragma-deps-lib/build_third_party_libs.py pragma/build_scripts/build_third_party_libs.py
+        run: cp build_third_party_libs.py pragma/build_scripts/build_third_party_libs.py
 
       - name: Build Pragma
         uses: Silverlan/pragma/github_actions/build@develop
