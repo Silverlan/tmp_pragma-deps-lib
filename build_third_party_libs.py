@@ -12,100 +12,69 @@ import config
 
 from scripts.shared import *
 
-def _on_rm_error(func, path, exc_info):
-    """
-    Error handler for shutil.rmtree:
-    - try to make writable and retry once
-    - if still fails, re-raise the exception
-    """
-    try:
-        os.chmod(path, stat.S_IWRITE)
-    except Exception:
-        pass
-    try:
-        func(path)
-    except Exception:
-        raise
+def on_rm_error(func, path, exc_info):
+	# Try to make writable and try removal once more
+	try:
+		os.chmod(path, stat.S_IWRITE)
+	except Exception:
+		pass
+	try:
+		func(path)
+	except Exception:
+		raise
 
-def _ensure_not_cwd(path: Path):
-    cwd = Path.cwd().resolve()
-    try:
-        # if cwd is inside path, change to system tempdir
-        if cwd == path.resolve() or str(cwd).startswith(str(path.resolve()) + os.sep):
-            os.chdir(tempfile.gettempdir())
-    except Exception:
-        # be conservative: ignore exceptions here
-        pass
+def safe_remove_tree(path, retries=5, delay=0.5):
+	p = Path(path)
+	if not p.exists():
+		return True
 
-def safe_remove_tree(path, retries=5, delay=0.5, ignore_errors=True):
-    """
-    Robustly remove directory `path`.
-    Strategy:
-      1) If possible, atomically rename/move to a tmp 'trash' directory.
-      2) rmtree the moved directory with retries and onerror handler.
-      3) If Python rmtree fails on POSIX, fall back to shell 'rm -rf'.
-    Returns True if deletion succeeded or path did not exist; False otherwise.
-    """
-    p = Path(path)
-    if not p.exists():
-        return True
+	# .git dir is often problematic because it may still be in use by the system, so we'll try to delete it first
+	git_dir = p / '.git'
+	if git_dir.exists():
+		try:
+			shutil.rmtree(git_dir, onerror=on_rm_error)
+		except Exception:
+			pass
 
-    # avoid deleting while being inside the dir
-    _ensure_not_cwd(p)
+	# Move the tree to temp trash
+	trash_parent = Path(tempfile.gettempdir())
+	trash_name = "build-trash-" + uuid.uuid4().hex
+	trash_path = trash_parent / trash_name
 
-    # If possible, try to remove .git first to reduce locked files (optional)
-    git_dir = p / '.git'
-    if git_dir.exists():
-        try:
-            shutil.rmtree(git_dir, onerror=_on_rm_error)
-        except Exception:
-            # ignore — we'll still try the rename trick below
-            pass
+	try:
+		os.rename(p, trash_path)
+		moved = True
+	except Exception:
+		# rename failed, try shutil.move
+		try:
+			shutil.move(str(p), str(trash_path))
+			moved = True
+		except Exception:
+			moved = False
 
-    # Try to atomically move the tree to temp trash
-    trash_parent = Path(tempfile.gettempdir())
-    trash_name = "build-trash-" + uuid.uuid4().hex
-    trash_path = trash_parent / trash_name
+	target = trash_path if moved else p
 
-    try:
-        # prefer os.rename for atomicity when same filesystem
-        os.rename(p, trash_path)
-        moved = True
-    except Exception:
-        # rename failed (maybe cross-device), try shutil.move
-        try:
-            shutil.move(str(p), str(trash_path))
-            moved = True
-        except Exception:
-            moved = False
+	# attempt deletion
+	for attempt in range(1, retries + 1):
+		try:
+			if target.exists():
+				shutil.rmtree(str(target), onerror=_on_rm_error)
+			if not target.exists():
+				return True
+		except Exception as exc:
+			# wait and retry
+			time.sleep(delay * attempt)
 
-    target = trash_path if moved else p
+	# last-resort fallback on Linux: use rm -rf
+	if platform == "linux" and target.exists():
+		try:
+			subprocess.run(['rm', '-rf', str(target)], check=True)
+			return not target.exists()
+		except Exception:
+			pass
 
-    # attempt deletion with retries
-    for attempt in range(1, retries + 1):
-        try:
-            if target.exists():
-                shutil.rmtree(str(target), onerror=_on_rm_error)
-            # success if path gone
-            if not target.exists():
-                return True
-        except Exception as exc:
-            # wait and retry
-            time.sleep(delay * attempt)
-
-    # last-resort fallback on POSIX: use rm -rf
-    if os.name == 'posix' and target.exists():
-        try:
-            subprocess.run(['rm', '-rf', str(target)], check=True)
-            return not target.exists()
-        except Exception:
-            pass
-
-    # give up
-    if ignore_errors:
-        return False
-    else:
-        raise RuntimeError(f"Could not delete build path: {path}")
+	# Deletion failed
+	return False
 
 def cleanup_build_files(resultData):
 	if resultData is not None:
@@ -124,6 +93,7 @@ def build_library(name, *args, **kwargs):
 	# something has changed.
 	if not config.clean_deps_build_files or not Path(get_library_root_dir(name)).is_dir():
 		res = build_third_party_library(name, *args, **kwargs)
+		os.chdir(config.deps_dir)
 		if config.clean_deps_build_files:
 			cleanup_build_files(res)
 
