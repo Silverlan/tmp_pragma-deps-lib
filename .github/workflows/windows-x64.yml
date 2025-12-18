@@ -97,3 +97,8 @@ jobs:
           tag: "${{ steps.get_date.outputs.date }}"
           token: ${{ secrets.GITHUB_TOKEN }}
           files: "lib-windows_x64.zip"
+
+      - name: Handle Error
+        uses: Silverlan/common_actions/action_handle_error@main
+        if: failure()
+
