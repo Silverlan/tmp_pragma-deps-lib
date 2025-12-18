@@ -98,7 +98,15 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           files: "lib-windows_x64.zip"
 
-      - name: Handle Error
-        uses: Silverlan/common_actions/action_handle_error@main
+      - uses: actions/checkout@v4
+      - name: Setup tmate session
         if: failure()
+        uses: mxschmitt/action-tmate@v3
+        with:
+          limit-access-to-actor: true
+
+      #- name: Handle Error
+      #  uses: Silverlan/common_actions/action_handle_error@main
+      #  if: failure()
+
 
